@@ -11,6 +11,12 @@
   <button id="createRoom">建立房間 (成為 Host)</button>
   <input id="roomId" placeholder="輸入 Room ID 加入" />
   <button id="joinRoom">加入房間</button>
+  <div id="videoControls" style="display: none; margin-top: 10px;">
+    <input id="videoId" placeholder="輸入 YouTube 視頻 ID 或完整 URL" style="width: 400px;" />
+    <button id="changeVideo">更改視頻</button>
+    <br>
+    <small style="color: #666;">支援格式: 視頻ID (如: M7lc1UVf-VE) 或完整URL (如: https://www.youtube.com/watch?v=M7lc1UVf-VE)</small>
+  </div>
   <p id="status">狀態：未連線</p>
 
   <script>
@@ -18,6 +24,8 @@
     let peer; // PeerJS 實例
     let conn; // 連線物件
     let isHost = false;
+    let isSyncing = false; // 防止同步循環
+    let lastSyncTime = 0; // 記錄最後同步時間
     const urlParams = new URLSearchParams(window.location.search);
     const autoRoom = urlParams.get('room');
 
@@ -37,26 +45,79 @@
     function onPlayerReady(event) {
       document.getElementById('createRoom').onclick = createRoom;
       document.getElementById('joinRoom').onclick = joinRoom;
+      document.getElementById('changeVideo').onclick = changeVideo;
 
       if (autoRoom) {
         joinRoom(autoRoom);
       }
 
-      // 定時廣播狀態 (僅 host)
+      // 定時廣播狀態 (僅 host) - 降低頻率避免過度同步
       setInterval(() => {
-        if (isHost && player.getPlayerState() === 1) {
+        if (isHost && player.getPlayerState() === 1 && !isSyncing) {
           broadcast({ action: 'sync', time: player.getCurrentTime(), state: 'play' });
         }
-      }, 1000);
+      }, 2000); // 從1秒改為2秒，減少同步頻率
     }
 
     function onPlayerStateChange(event) {
-      if (isHost) {
+      // 只有在是host且不是正在同步時才廣播狀態變化
+      if (isHost && !isSyncing) {
         if (event.data === YT.PlayerState.PLAYING) {
           broadcast({ action: 'play', time: player.getCurrentTime() });
         } else if (event.data === YT.PlayerState.PAUSED) {
           broadcast({ action: 'pause', time: player.getCurrentTime() });
         }
+      }
+    }
+
+    // 從YouTube URL提取視頻ID
+    function extractVideoId(url) {
+      const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+      const match = url.match(regex);
+      return match ? match[1] : null;
+    }
+
+    // 更改視頻函數
+    function changeVideo() {
+      const input = document.getElementById('videoId').value.trim();
+      if (!input) {
+        alert('請輸入有效的 YouTube 視頻 ID 或 URL');
+        return;
+      }
+      
+      let videoId;
+      
+      // 檢查是否為完整URL
+      if (input.includes('youtube.com') || input.includes('youtu.be')) {
+        videoId = extractVideoId(input);
+        if (!videoId) {
+          alert('無法從 URL 中提取視頻 ID，請檢查 URL 格式');
+          return;
+        }
+      } else {
+        // 直接使用輸入作為視頻ID
+        videoId = input;
+      }
+      
+      // 驗證視頻ID格式（YouTube視頻ID通常是11個字符）
+      if (videoId.length !== 11) {
+        alert('YouTube 視頻 ID 應該是 11 個字符長度');
+        return;
+      }
+      
+      if (isHost) {
+        // Host 更改視頻並廣播給所有客戶端
+        try {
+          player.loadVideoById(videoId);
+          broadcast({ action: 'changeVideo', videoId: videoId });
+          document.getElementById('videoId').value = '';
+          document.getElementById('status').textContent = `已更改視頻: ${videoId}`;
+        } catch (error) {
+          alert('無法載入視頻，請檢查視頻 ID 是否正確');
+          console.error('載入視頻錯誤:', error);
+        }
+      } else {
+        alert('只有 Host 可以更改視頻');
       }
     }
 
@@ -66,6 +127,8 @@
       peer.on('open', (id) => {
         document.getElementById('status').textContent = `房間 ID: ${id} (分享此連結: ${location.href}?room=${id})`;
         isHost = true;
+        // 顯示視頻控制面板
+        document.getElementById('videoControls').style.display = 'block';
       });
 
       peer.on('connection', (connection) => {
@@ -109,21 +172,55 @@
 
     // 接收同步 (peers)
     function handleSync(data) {
-      if (data.action === 'play') {
-        player.seekTo(data.time);
-        player.playVideo();
-      } else if (data.action === 'pause') {
-        player.seekTo(data.time);
-        player.pauseVideo();
-      } else if (data.action === 'sync') {
-        player.seekTo(data.time);
-        if (data.state === 'play') player.playVideo();
+      // 防止重複同步和時間過於頻繁的同步
+      const currentTime = Date.now();
+      if (isSyncing || (currentTime - lastSyncTime < 500)) {
+        return;
+      }
+      
+      isSyncing = true;
+      lastSyncTime = currentTime;
+      
+      try {
+        if (data.action === 'play') {
+          player.seekTo(data.time, true);
+          player.playVideo();
+        } else if (data.action === 'pause') {
+          player.seekTo(data.time, true);
+          player.pauseVideo();
+        } else if (data.action === 'sync') {
+          player.seekTo(data.time, true);
+          if (data.state === 'play') {
+            player.playVideo();
+          } else {
+            player.pauseVideo();
+          }
+        } else if (data.action === 'seek') {
+          player.seekTo(data.time, true);
+        } else if (data.action === 'changeVideo') {
+          player.loadVideoById(data.videoId);
+        }
+      } catch (error) {
+        console.error('同步錯誤:', error);
+      } finally {
+        // 延遲重置同步標誌，避免立即觸發狀態變化
+        setTimeout(() => {
+          isSyncing = false;
+        }, 1000);
       }
     }
 
     // 用戶尋找時，如果是 host 廣播
+    let isManualSeek = false;
+    player.getVideoElement().addEventListener('seeking', () => {
+      isManualSeek = true;
+    });
+    
     player.getVideoElement().addEventListener('seeked', () => {
-      if (isHost) broadcast({ action: 'seek', time: player.getCurrentTime() });
+      if (isHost && isManualSeek && !isSyncing) {
+        broadcast({ action: 'seek', time: player.getCurrentTime() });
+      }
+      isManualSeek = false;
     });
   </script>
 </body>
