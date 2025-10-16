@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>P2P 同步 YouTube 播放器</title>
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script> <!-- PeerJS CDN -->
+</head>
+<body>
+  <div id="player"></div>
+  <button id="createRoom">建立房間 (成為 Host)</button>
+  <input id="roomId" placeholder="輸入 Room ID 加入" />
+  <button id="joinRoom">加入房間</button>
+  <p id="status">狀態：未連線</p>
+
+  <script>
+    let player;
+    let peer; // PeerJS 實例
+    let conn; // 連線物件
+    let isHost = false;
+    const urlParams = new URLSearchParams(window.location.search);
+    const autoRoom = urlParams.get('room');
+
+    // YouTube 播放器初始化
+    function onYouTubeIframeAPIReady() {
+      player = new YT.Player('player', {
+        height: '390',
+        width: '640',
+        videoId: 'M7lc1UVf-VE', // 替換成您的影片 ID
+        events: {
+          'onReady': onPlayerReady,
+          'onStateChange': onPlayerStateChange
+        }
+      });
+    }
+
+    function onPlayerReady(event) {
+      document.getElementById('createRoom').onclick = createRoom;
+      document.getElementById('joinRoom').onclick = joinRoom;
+
+      if (autoRoom) {
+        joinRoom(autoRoom);
+      }
+
+      // 定時廣播狀態 (僅 host)
+      setInterval(() => {
+        if (isHost && player.getPlayerState() === 1) {
+          broadcast({ action: 'sync', time: player.getCurrentTime(), state: 'play' });
+        }
+      }, 1000);
+    }
+
+    function onPlayerStateChange(event) {
+      if (isHost) {
+        if (event.data === YT.PlayerState.PLAYING) {
+          broadcast({ action: 'play', time: player.getCurrentTime() });
+        } else if (event.data === YT.PlayerState.PAUSED) {
+          broadcast({ action: 'pause', time: player.getCurrentTime() });
+        }
+      }
+    }
+
+    // 建立房間 (Host)
+    function createRoom() {
+      peer = new Peer(); // 產生隨機 ID
+      peer.on('open', (id) => {
+        document.getElementById('status').textContent = `房間 ID: ${id} (分享此連結: ${location.href}?room=${id})`;
+        isHost = true;
+      });
+
+      peer.on('connection', (connection) => {
+        conn = connection;
+        setupConn(conn);
+      });
+    }
+
+    // 加入房間 (Peer)
+    function joinRoom(roomId) {
+      if (!roomId && !autoRoom) roomId = document.getElementById('roomId').value;
+      if (!roomId) return alert('請輸入 Room ID');
+
+      peer = new Peer();
+      peer.on('open', () => {
+        conn = peer.connect(roomId);
+        setupConn(conn);
+      });
+    }
+
+    // 設定連線事件
+    function setupConn(connection) {
+      conn = connection;
+      conn.on('open', () => {
+        document.getElementById('status').textContent = '連線成功！';
+      });
+
+      conn.on('data', (data) => {
+        if (!isHost) {
+          handleSync(data);
+        }
+      });
+    }
+
+    // 廣播 (僅 host)
+    function broadcast(data) {
+      if (conn && conn.open) {
+        conn.send(data);
+      }
+    }
+
+    // 接收同步 (peers)
+    function handleSync(data) {
+      if (data.action === 'play') {
+        player.seekTo(data.time);
+        player.playVideo();
+      } else if (data.action === 'pause') {
+        player.seekTo(data.time);
+        player.pauseVideo();
+      } else if (data.action === 'sync') {
+        player.seekTo(data.time);
+        if (data.state === 'play') player.playVideo();
+      }
+    }
+
+    // 用戶尋找時，如果是 host 廣播
+    player.getVideoElement().addEventListener('seeked', () => {
+      if (isHost) broadcast({ action: 'seek', time: player.getCurrentTime() });
+    });
+  </script>
+</body>
+</html>
