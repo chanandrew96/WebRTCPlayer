@@ -17,6 +17,14 @@
     <br>
     <small style="color: #666;">支援格式: 視頻ID (如: M7lc1UVf-VE) 或完整URL (如: https://www.youtube.com/watch?v=M7lc1UVf-VE)</small>
   </div>
+  
+  <div id="shareSection" style="display: none; margin-top: 15px; padding: 10px; background-color: #f0f8ff; border: 1px solid #ccc; border-radius: 5px;">
+    <h3 style="margin: 0 0 10px 0; color: #333;">分享房間</h3>
+    <div id="shareUrl" style="word-break: break-all; margin-bottom: 10px;"></div>
+    <button id="copyUrl" style="background-color: #4CAF50; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">複製連結</button>
+    <span id="copyStatus" style="margin-left: 10px; color: #666;"></span>
+  </div>
+  
   <p id="status">狀態：未連線</p>
 
   <script>
@@ -26,15 +34,18 @@
     let isHost = false;
     let isSyncing = false; // 防止同步循環
     let lastSyncTime = 0; // 記錄最後同步時間
+    let isConnected = false; // 連線狀態標誌
+    let currentRoomId = null; // 保存當前房間ID
     const urlParams = new URLSearchParams(window.location.search);
     const autoRoom = urlParams.get('room');
+    const initialVideoId = urlParams.get('video') || 'M7lc1UVf-VE'; // 支持video參數
 
     // YouTube 播放器初始化
     function onYouTubeIframeAPIReady() {
       player = new YT.Player('player', {
         height: '390',
         width: '640',
-        videoId: 'M7lc1UVf-VE', // 替換成您的影片 ID
+        videoId: initialVideoId, // 使用URL參數或默認視頻ID
         events: {
           'onReady': onPlayerReady,
           'onStateChange': onPlayerStateChange
@@ -46,9 +57,14 @@
       document.getElementById('createRoom').onclick = createRoom;
       document.getElementById('joinRoom').onclick = joinRoom;
       document.getElementById('changeVideo').onclick = changeVideo;
+      document.getElementById('copyUrl').onclick = copyShareUrl;
 
       if (autoRoom) {
         joinRoom(autoRoom);
+      } else if (!isHost) {
+        // 只有在沒有自動加入房間且不是host時，才載入初始視頻
+        // 這樣客戶端會等待host的視頻指令
+        player.loadVideoById(initialVideoId);
       }
 
       // 定時廣播狀態 (僅 host) - 降低頻率避免過度同步
@@ -75,6 +91,55 @@
       const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
       const match = url.match(regex);
       return match ? match[1] : null;
+    }
+
+    // 複製分享連結
+    function copyShareUrl() {
+      const shareUrlElement = document.getElementById('shareUrl');
+      const shareUrl = shareUrlElement.textContent;
+      
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(shareUrl).then(() => {
+          document.getElementById('copyStatus').textContent = '已複製！';
+          setTimeout(() => {
+            document.getElementById('copyStatus').textContent = '';
+          }, 2000);
+        }).catch(err => {
+          console.error('複製失敗:', err);
+          fallbackCopyTextToClipboard(shareUrl);
+        });
+      } else {
+        fallbackCopyTextToClipboard(shareUrl);
+      }
+    }
+
+    // 備用複製方法
+    function fallbackCopyTextToClipboard(text) {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.top = "0";
+      textArea.style.left = "0";
+      textArea.style.position = "fixed";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      
+      try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+          document.getElementById('copyStatus').textContent = '已複製！';
+          setTimeout(() => {
+            document.getElementById('copyStatus').textContent = '';
+          }, 2000);
+        } else {
+          document.getElementById('copyStatus').textContent = '複製失敗';
+        }
+      } catch (err) {
+        console.error('複製失敗:', err);
+        document.getElementById('copyStatus').textContent = '複製失敗';
+      }
+      
+      document.body.removeChild(textArea);
     }
 
     // 更改視頻函數
@@ -111,7 +176,15 @@
           player.loadVideoById(videoId);
           broadcast({ action: 'changeVideo', videoId: videoId });
           document.getElementById('videoId').value = '';
-          document.getElementById('status').textContent = `已更改視頻: ${videoId}`;
+          
+          // 更新分享連結以包含新的視頻ID
+          if (currentRoomId) {
+            const shareUrl = `${location.origin}${location.pathname}?room=${currentRoomId}&video=${videoId}`;
+            document.getElementById('shareUrl').textContent = shareUrl;
+            document.getElementById('status').textContent = `已更改視頻: ${videoId}`;
+          } else {
+            document.getElementById('status').textContent = `已更改視頻: ${videoId}`;
+          }
         } catch (error) {
           alert('無法載入視頻，請檢查視頻 ID 是否正確');
           console.error('載入視頻錯誤:', error);
@@ -125,7 +198,16 @@
     function createRoom() {
       peer = new Peer(); // 產生隨機 ID
       peer.on('open', (id) => {
-        document.getElementById('status').textContent = `房間 ID: ${id} (分享此連結: ${location.href}?room=${id})`;
+        currentRoomId = id; // 保存房間ID
+        const shareUrl = `${location.origin}${location.pathname}?room=${id}&video=${initialVideoId}`;
+        
+        // 更新分享區域
+        document.getElementById('shareUrl').textContent = shareUrl;
+        document.getElementById('shareSection').style.display = 'block';
+        
+        // 更新狀態
+        document.getElementById('status').textContent = `房間已建立！房間 ID: ${id}`;
+        
         isHost = true;
         // 顯示視頻控制面板
         document.getElementById('videoControls').style.display = 'block';
@@ -134,6 +216,18 @@
       peer.on('connection', (connection) => {
         conn = connection;
         setupConn(conn);
+        
+        // 當有新客戶端連接時，立即發送當前視頻信息
+        connection.on('open', () => {
+          setTimeout(() => {
+            if (player && player.getVideoData) {
+              const currentVideoId = player.getVideoData().video_id;
+              if (currentVideoId) {
+                broadcast({ action: 'changeVideo', videoId: currentVideoId });
+              }
+            }
+          }, 1000); // 延遲1秒確保連線穩定
+        });
       });
     }
 
@@ -153,17 +247,29 @@
     function setupConn(connection) {
       conn = connection;
       conn.on('open', () => {
+        isConnected = true;
         document.getElementById('status').textContent = '連線成功！';
+        
+        // 如果是客戶端且連線成功，請求host發送當前視頻信息
+        if (!isHost) {
+          broadcast({ action: 'requestVideoInfo' });
+        }
       });
 
       conn.on('data', (data) => {
         if (!isHost) {
           handleSync(data);
+        } else if (isHost && data.action === 'requestVideoInfo') {
+          // Host收到客戶端請求，發送當前視頻信息
+          broadcast({ 
+            action: 'changeVideo', 
+            videoId: player.getVideoData().video_id 
+          });
         }
       });
     }
 
-    // 廣播 (僅 host)
+    // 廣播函數
     function broadcast(data) {
       if (conn && conn.open) {
         conn.send(data);
@@ -198,7 +304,13 @@
         } else if (data.action === 'seek') {
           player.seekTo(data.time, true);
         } else if (data.action === 'changeVideo') {
-          player.loadVideoById(data.videoId);
+          // 客戶端接收視頻更改指令
+          try {
+            player.loadVideoById(data.videoId);
+            document.getElementById('status').textContent = `已同步到視頻: ${data.videoId}`;
+          } catch (error) {
+            console.error('載入視頻錯誤:', error);
+          }
         }
       } catch (error) {
         console.error('同步錯誤:', error);
