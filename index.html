@@ -8,7 +8,22 @@
 </head>
 <body>
   <div id="player"></div>
+  <div id="playHint" style="display: none; background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 10px 0; border-radius: 5px;">
+    <strong>提示：</strong> 點擊播放器開始播放視頻。由於瀏覽器安全政策，需要用戶交互才能開始播放。
+  </div>
+  <div id="serverConfig" style="margin: 10px 0; padding: 10px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 5px;">
+    <h4 style="margin: 0 0 10px 0;">PeerJS 服務器配置 (可選)</h4>
+    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+      <input id="serverHost" placeholder="主機 (如: localhost)" style="width: 120px;" />
+      <input id="serverPort" placeholder="端口 (如: 9000)" type="number" style="width: 80px;" />
+      <input id="serverPath" placeholder="路徑 (如: /peerjs)" style="width: 100px;" />
+      <button id="resetServerConfig" style="background-color: #6c757d; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">重置為默認</button>
+    </div>
+    <small style="color: #666; display: block; margin-top: 5px;">留空使用 PeerJS 默認雲服務器</small>
+  </div>
+  
   <button id="createRoom">建立房間 (成為 Host)</button>
+  <button id="retryConnection" style="display: none; background-color: #ff9800; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">重試連接</button>
   <input id="roomId" placeholder="輸入 Room ID 加入" />
   <button id="joinRoom">加入房間</button>
   <div id="videoControls" style="display: none; margin-top: 10px;">
@@ -35,12 +50,20 @@
     let isSyncing = false; // 防止同步循環
     let lastSyncTime = 0; // 記錄最後同步時間
     let isConnected = false; // 連線狀態標誌
+    let currentRoomId = null; // 保存當前房間ID
+    let currentVideoId = null; // 保存當前視頻ID
     const urlParams = new URLSearchParams(window.location.search);
     const autoRoom = urlParams.get('room');
     const initialVideoId = urlParams.get('video') || 'M7lc1UVf-VE'; // 支持video參數
 
+    // 頁面載入完成後立即設置事件監聽器
+    document.addEventListener('DOMContentLoaded', function() {
+      setupEventListeners();
+    });
+
     // YouTube 播放器初始化
     function onYouTubeIframeAPIReady() {
+      currentVideoId = initialVideoId; // 設置初始視頻ID
       player = new YT.Player('player', {
         height: '390',
         width: '640',
@@ -52,11 +75,26 @@
       });
     }
 
-    function onPlayerReady(event) {
+    // 設置事件監聽器（不依賴YouTube API）
+    function setupEventListeners() {
       document.getElementById('createRoom').onclick = createRoom;
       document.getElementById('joinRoom').onclick = joinRoom;
       document.getElementById('changeVideo').onclick = changeVideo;
       document.getElementById('copyUrl').onclick = copyShareUrl;
+      document.getElementById('retryConnection').onclick = retryConnection;
+      document.getElementById('resetServerConfig').onclick = resetServerConfig;
+    }
+
+    function onPlayerReady(event) {
+      // 確保事件監聽器已設置
+      setupEventListeners();
+      
+      // 添加播放器點擊事件來處理自動播放限制
+      document.getElementById('player').addEventListener('click', () => {
+        if (player.getPlayerState() === 5) { // 如果播放器暫停
+          player.playVideo();
+        }
+      });
 
       if (autoRoom) {
         joinRoom(autoRoom);
@@ -65,6 +103,11 @@
         // 這樣客戶端會等待host的視頻指令
         player.loadVideoById(initialVideoId);
       }
+      
+      // 顯示播放提示
+      setTimeout(() => {
+        document.getElementById('playHint').style.display = 'block';
+      }, 2000); // 2秒後顯示提示
 
       // 定時廣播狀態 (僅 host) - 降低頻率避免過度同步
       setInterval(() => {
@@ -72,9 +115,17 @@
           broadcast({ action: 'sync', time: player.getCurrentTime(), state: 'play' });
         }
       }, 2000); // 從1秒改為2秒，減少同步頻率
+
+      // 注意：YouTube Player API 沒有直接的 seeking/seeked 事件
+      // 我們可以通過監聽播放器狀態變化來檢測拖拽
+      // 但為了簡化，我們暫時移除手動拖拽檢測功能
+      // 用戶可以通過暫停/播放來控制同步
     }
 
     function onPlayerStateChange(event) {
+      // 隱藏播放提示（用戶已經開始交互）
+      document.getElementById('playHint').style.display = 'none';
+      
       // 只有在是host且不是正在同步時才廣播狀態變化
       if (isHost && !isSyncing) {
         if (event.data === YT.PlayerState.PLAYING) {
@@ -173,14 +224,13 @@
         // Host 更改視頻並廣播給所有客戶端
         try {
           player.loadVideoById(videoId);
+          currentVideoId = videoId; // 更新當前視頻ID
           broadcast({ action: 'changeVideo', videoId: videoId });
           document.getElementById('videoId').value = '';
           
           // 更新分享連結以包含新的視頻ID
-          const currentUrl = new URL(window.location);
-          const roomId = currentUrl.searchParams.get('room');
-          if (roomId) {
-            const shareUrl = `${location.origin}${location.pathname}?room=${roomId}&video=${videoId}`;
+          if (currentRoomId) {
+            const shareUrl = `${location.origin}${location.pathname}?room=${currentRoomId}&video=${videoId}`;
             document.getElementById('shareUrl').textContent = shareUrl;
             document.getElementById('status').textContent = `已更改視頻: ${videoId}`;
           } else {
@@ -195,40 +245,170 @@
       }
     }
 
+    // 重試連接
+    function retryConnection() {
+      console.log('重試連接');
+      document.getElementById('retryConnection').style.display = 'none';
+      document.getElementById('createRoom').style.display = 'inline-block';
+      createRoom();
+    }
+
+    // 重置服務器配置
+    function resetServerConfig() {
+      document.getElementById('serverHost').value = '';
+      document.getElementById('serverPort').value = '';
+      document.getElementById('serverPath').value = '';
+      console.log('服務器配置已重置為默認');
+    }
+
+    // 獲取服務器配置
+    function getServerConfig() {
+      const host = document.getElementById('serverHost').value.trim();
+      const port = document.getElementById('serverPort').value.trim();
+      const path = document.getElementById('serverPath').value.trim();
+      
+      // 如果所有字段都為空，返回null使用默認配置
+      if (!host && !port && !path) {
+        return null;
+      }
+      
+      const config = {};
+      
+      // 驗證和設置主機
+      if (host) {
+        // 基本的主機名驗證
+        if (host.length > 0) {
+          config.host = host;
+        }
+      }
+      
+      // 驗證和設置端口
+      if (port) {
+        const portNum = parseInt(port);
+        if (portNum > 0 && portNum <= 65535) {
+          config.port = portNum;
+        } else {
+          console.warn('無效的端口號:', port);
+          alert('端口號必須在 1-65535 範圍內');
+          return null;
+        }
+      }
+      
+      // 驗證和設置路徑
+      if (path) {
+        // 確保路徑以 / 開頭
+        config.path = path.startsWith('/') ? path : '/' + path;
+      }
+      
+      // 添加調試模式
+      config.debug = 3;
+      
+      return config;
+    }
+
     // 建立房間 (Host)
     function createRoom() {
-      peer = new Peer(); // 產生隨機 ID
-      peer.on('open', (id) => {
-        const shareUrl = `${location.origin}${location.pathname}?room=${id}&video=${initialVideoId}`;
+      console.log('建立房間按鈕被點擊');
+      document.getElementById('status').textContent = '正在建立房間...';
+      
+      // 檢查PeerJS是否可用
+      if (typeof Peer === 'undefined') {
+        console.error('PeerJS 未載入');
+        document.getElementById('status').textContent = 'PeerJS 未載入，請刷新頁面重試';
+        return;
+      }
+      
+      // 設置連接超時
+      const connectionTimeout = setTimeout(() => {
+        if (!isHost) {
+          document.getElementById('status').textContent = '建立房間超時，請檢查網絡連接或稍後重試';
+          document.getElementById('createRoom').style.display = 'none';
+          document.getElementById('retryConnection').style.display = 'inline-block';
+          console.error('PeerJS 連接超時');
+        }
+      }, 10000); // 10秒超時
+      
+      try {
+        console.log('創建 Peer 實例...');
         
-        // 更新分享區域
-        document.getElementById('shareUrl').textContent = shareUrl;
-        document.getElementById('shareSection').style.display = 'block';
+        // 獲取用戶配置
+        const serverConfig = getServerConfig();
+        console.log('服務器配置:', serverConfig);
         
-        // 更新狀態
-        document.getElementById('status').textContent = `房間已建立！房間 ID: ${id}`;
+        // 創建Peer實例
+        if (serverConfig) {
+          // 使用自定義服務器配置
+          peer = new Peer('', serverConfig);
+          console.log('使用自定義服務器配置:', serverConfig);
+        } else {
+          // 使用默認PeerJS雲服務器
+          peer = new Peer();
+          console.log('使用默認PeerJS雲服務器');
+        }
         
-        isHost = true;
-        // 顯示視頻控制面板
-        document.getElementById('videoControls').style.display = 'block';
-      });
-
-      peer.on('connection', (connection) => {
-        conn = connection;
-        setupConn(conn);
+        peer.on('open', (id) => {
+          console.log('房間建立成功，ID:', id);
+          clearTimeout(connectionTimeout); // 清除超時
+          
+          currentRoomId = id; // 保存房間ID
+          const shareUrl = `${location.origin}${location.pathname}?room=${id}&video=${initialVideoId}`;
+          
+          // 更新分享區域
+          document.getElementById('shareUrl').textContent = shareUrl;
+          document.getElementById('shareSection').style.display = 'block';
+          
+          // 更新狀態
+          document.getElementById('status').textContent = `房間已建立！房間 ID: ${id}`;
+          
+          isHost = true;
+          // 顯示視頻控制面板
+          document.getElementById('videoControls').style.display = 'block';
+        });
         
-        // 當有新客戶端連接時，立即發送當前視頻信息
-        connection.on('open', () => {
-          setTimeout(() => {
-            if (player && player.getVideoData) {
-              const currentVideoId = player.getVideoData().video_id;
+        peer.on('error', (err) => {
+          console.error('PeerJS 錯誤:', err);
+          console.error('錯誤類型:', err.type);
+          console.error('錯誤消息:', err.message);
+          clearTimeout(connectionTimeout); // 清除超時
+          
+          let errorMessage = '建立房間失敗';
+          if (err.type === 'unavailable-id') {
+            errorMessage = '房間ID不可用，請重試';
+          } else if (err.type === 'network') {
+            errorMessage = '網絡連接失敗，請檢查網絡';
+          } else if (err.type === 'server-error') {
+            errorMessage = '服務器錯誤，請稍後重試';
+          } else if (err.type === 'browser-incompatible') {
+            errorMessage = '瀏覽器不兼容，請使用Chrome、Firefox或Safari';
+          } else if (err.type === 'ssl-unavailable') {
+            errorMessage = '需要HTTPS連接，請使用安全連接';
+          } else {
+            errorMessage = `建立房間失敗: ${err.type} - ${err.message}`;
+          }
+          
+          document.getElementById('status').textContent = errorMessage;
+          document.getElementById('createRoom').style.display = 'none';
+          document.getElementById('retryConnection').style.display = 'inline-block';
+        });
+        
+        peer.on('connection', (connection) => {
+          conn = connection;
+          setupConn(conn);
+          
+          // 當有新客戶端連接時，立即發送當前視頻信息
+          connection.on('open', () => {
+            setTimeout(() => {
               if (currentVideoId) {
                 broadcast({ action: 'changeVideo', videoId: currentVideoId });
               }
-            }
-          }, 1000); // 延遲1秒確保連線穩定
+            }, 1000); // 延遲1秒確保連線穩定
+          });
         });
-      });
+        
+      } catch (error) {
+        console.error('建立房間時發生錯誤:', error);
+        document.getElementById('status').textContent = `建立房間失敗: ${error.message}`;
+      }
     }
 
     // 加入房間 (Peer)
@@ -236,10 +416,29 @@
       if (!roomId && !autoRoom) roomId = document.getElementById('roomId').value;
       if (!roomId) return alert('請輸入 Room ID');
 
-      peer = new Peer();
+      // 獲取用戶配置
+      const serverConfig = getServerConfig();
+      console.log('加入房間 - 服務器配置:', serverConfig);
+      
+      // 創建Peer實例
+      if (serverConfig) {
+        // 使用自定義服務器配置
+        peer = new Peer('', serverConfig);
+        console.log('加入房間 - 使用自定義服務器配置:', serverConfig);
+      } else {
+        // 使用默認PeerJS雲服務器
+        peer = new Peer();
+        console.log('加入房間 - 使用默認PeerJS雲服務器');
+      }
+      
       peer.on('open', () => {
         conn = peer.connect(roomId);
         setupConn(conn);
+      });
+      
+      peer.on('error', (err) => {
+        console.error('加入房間時發生錯誤:', err);
+        document.getElementById('status').textContent = `加入房間失敗: ${err.type} - ${err.message}`;
       });
     }
 
@@ -261,10 +460,12 @@
           handleSync(data);
         } else if (isHost && data.action === 'requestVideoInfo') {
           // Host收到客戶端請求，發送當前視頻信息
-          broadcast({ 
-            action: 'changeVideo', 
-            videoId: player.getVideoData().video_id 
-          });
+          if (currentVideoId) {
+            broadcast({ 
+              action: 'changeVideo', 
+              videoId: currentVideoId 
+            });
+          }
         }
       });
     }
@@ -307,6 +508,7 @@
           // 客戶端接收視頻更改指令
           try {
             player.loadVideoById(data.videoId);
+            currentVideoId = data.videoId; // 更新當前視頻ID
             document.getElementById('status').textContent = `已同步到視頻: ${data.videoId}`;
           } catch (error) {
             console.error('載入視頻錯誤:', error);
@@ -322,18 +524,6 @@
       }
     }
 
-    // 用戶尋找時，如果是 host 廣播
-    let isManualSeek = false;
-    player.getVideoElement().addEventListener('seeking', () => {
-      isManualSeek = true;
-    });
-    
-    player.getVideoElement().addEventListener('seeked', () => {
-      if (isHost && isManualSeek && !isSyncing) {
-        broadcast({ action: 'seek', time: player.getCurrentTime() });
-      }
-      isManualSeek = false;
-    });
   </script>
 </body>
 </html>
