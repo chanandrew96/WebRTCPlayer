@@ -35,7 +35,6 @@
     let isSyncing = false; // 防止同步循環
     let lastSyncTime = 0; // 記錄最後同步時間
     let isConnected = false; // 連線狀態標誌
-    let currentRoomId = null; // 保存當前房間ID
     const urlParams = new URLSearchParams(window.location.search);
     const autoRoom = urlParams.get('room');
     const initialVideoId = urlParams.get('video') || 'M7lc1UVf-VE'; // 支持video參數
@@ -178,8 +177,10 @@
           document.getElementById('videoId').value = '';
           
           // 更新分享連結以包含新的視頻ID
-          if (currentRoomId) {
-            const shareUrl = `${location.origin}${location.pathname}?room=${currentRoomId}&video=${videoId}`;
+          const currentUrl = new URL(window.location);
+          const roomId = currentUrl.searchParams.get('room');
+          if (roomId) {
+            const shareUrl = `${location.origin}${location.pathname}?room=${roomId}&video=${videoId}`;
             document.getElementById('shareUrl').textContent = shareUrl;
             document.getElementById('status').textContent = `已更改視頻: ${videoId}`;
           } else {
@@ -198,7 +199,6 @@
     function createRoom() {
       peer = new Peer(); // 產生隨機 ID
       peer.on('open', (id) => {
-        currentRoomId = id; // 保存房間ID
         const shareUrl = `${location.origin}${location.pathname}?room=${id}&video=${initialVideoId}`;
         
         // 更新分享區域
