@@ -55,10 +55,17 @@
     const urlParams = new URLSearchParams(window.location.search);
     const autoRoom = urlParams.get('room');
     const initialVideoId = urlParams.get('video') || 'M7lc1UVf-VE'; // 支持video參數
+    
+    // 從URL參數解析服務器配置
+    const urlServerHost = urlParams.get('serverHost');
+    const urlServerPort = urlParams.get('serverPort');
+    const urlServerPath = urlParams.get('serverPath');
+    const urlServerSecure = urlParams.get('serverSecure');
 
     // 頁面載入完成後立即設置事件監聽器
     document.addEventListener('DOMContentLoaded', function() {
       setupEventListeners();
+      loadServerConfigFromUrl();
     });
 
     // YouTube 播放器初始化
@@ -230,7 +237,7 @@
           
           // 更新分享連結以包含新的視頻ID
           if (currentRoomId) {
-            const shareUrl = `${location.origin}${location.pathname}?room=${currentRoomId}&video=${videoId}`;
+            const shareUrl = generateShareUrl(currentRoomId, videoId);
             document.getElementById('shareUrl').textContent = shareUrl;
             document.getElementById('status').textContent = `已更改視頻: ${videoId}`;
           } else {
@@ -259,6 +266,22 @@
       document.getElementById('serverPort').value = '';
       document.getElementById('serverPath').value = '';
       console.log('服務器配置已重置為默認');
+    }
+
+    // 從URL參數載入服務器配置
+    function loadServerConfigFromUrl() {
+      if (urlServerHost) {
+        document.getElementById('serverHost').value = urlServerHost;
+        console.log('從URL載入服務器主機:', urlServerHost);
+      }
+      if (urlServerPort) {
+        document.getElementById('serverPort').value = urlServerPort;
+        console.log('從URL載入服務器端口:', urlServerPort);
+      }
+      if (urlServerPath) {
+        document.getElementById('serverPath').value = urlServerPath;
+        console.log('從URL載入服務器路徑:', urlServerPath);
+      }
     }
 
     // 獲取服務器配置
@@ -302,8 +325,30 @@
       
       // 添加調試模式
       config.debug = 3;
+      config.secure = true;
       
       return config;
+    }
+
+    // 生成分享連結
+    function generateShareUrl(roomId, videoId) {
+      const baseUrl = `${location.origin}${location.pathname}`;
+      const params = new URLSearchParams();
+      
+      // 添加基本參數
+      params.set('room', roomId);
+      params.set('video', videoId);
+      
+      // 添加服務器配置參數
+      const serverConfig = getServerConfig();
+      if (serverConfig) {
+        if (serverConfig.host) params.set('serverHost', serverConfig.host);
+        if (serverConfig.port) params.set('serverPort', serverConfig.port);
+        if (serverConfig.path) params.set('serverPath', serverConfig.path);
+        if (serverConfig.secure !== undefined) params.set('serverSecure', serverConfig.secure);
+      }
+      
+      return `${baseUrl}?${params.toString()}`;
     }
 
     // 建立房間 (Host)
@@ -351,7 +396,7 @@
           clearTimeout(connectionTimeout); // 清除超時
           
           currentRoomId = id; // 保存房間ID
-          const shareUrl = `${location.origin}${location.pathname}?room=${id}&video=${initialVideoId}`;
+          const shareUrl = generateShareUrl(id, initialVideoId);
           
           // 更新分享區域
           document.getElementById('shareUrl').textContent = shareUrl;
